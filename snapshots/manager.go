@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 
@@ -457,4 +460,52 @@ func (m *Manager) snapshot(height int64) {
 
 		m.logger.Debug("pruned state snapshots", "pruned", pruned)
 	}
+
+	if err := m.exportSnapshot(snapshot); err != nil {
+		m.logger.Error("snapshot export failed", "height", height, "error", err)
+	}
+}
+
+func (m *Manager) exportSnapshot(snapshot *types.Snapshot) error {
+	snapshotsDir := os.Getenv("SNAPSHOT_EXPORT_DIR")
+	if snapshotsDir == "" {
+		return errors.New("SNAPSHOT_EXPORT_DIR env var is not set, not exporting the snapshot")
+	}
+
+	baseDir := fmt.Sprintf("%s/%d", snapshotsDir, snapshot.Height)
+	snapshotPath := fmt.Sprintf("%s/snapshot", baseDir)
+	chunkPath := filepath.Join(baseDir, "%d.chunk")
+
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		return err
+	}
+
+	abciSnap, err := snapshot.ToABCI()
+	if err != nil {
+		return err
+	}
+
+	data, err := abciSnap.Marshal()
+	if err != nil {
+		return err
+	}
+
+	if err := ioutil.WriteFile(snapshotPath, data, 0666); err != nil {
+		return err
+	}
+
+	for i := uint32(0); i < snapshot.Chunks; i++ {
+		m.logger.Info("exporting snapshot chunk", "height", snapshot.Height, "chunk", i)
+
+		chunkData, err := m.LoadChunk(snapshot.Height, snapshot.Format, i)
+		if err != nil {
+			return err
+		}
+
+		if err := ioutil.WriteFile(fmt.Sprintf(chunkPath, i), chunkData, 0666); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
